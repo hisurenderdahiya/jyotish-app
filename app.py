@@ -51,6 +51,7 @@ def api_calc():
 import datetime
 
 def sid(jd, body):
+    swe.set_sid_mode(swe.SIDM_LAHIRI)
     return swe.calc_ut(jd, body, swe.FLG_MOSEPH | swe.FLG_SIDEREAL)[0][0] % 360
 
 def fmt(jd, tz):
@@ -73,6 +74,31 @@ def find_end(fn, unit, jd0):
             hi = mid
     return hi
 
+
+def _signed(j):
+    return ((sid(j, swe.MOON) - sid(j, swe.SUN)) % 360 + 180) % 360 - 180
+
+def new_moon_near(t):
+    lo, hi = t - 2.5, t + 2.5
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if _signed(mid) < 0:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+def lunar_info(y, mo, tz, rise, el, sl):
+    prev = new_moon_near(rise - el / 12.19)
+    nxt = new_moon_near(prev + 29.53)
+    r0, r1 = int(sid(prev, swe.SUN) // 30), int(sid(nxt, swe.SUN) // 30)
+    m = (r0 + 1) % 12 + 1                      # 1=Chaitra ... 12=Phalguna (amanta; named by the Sun's rashi at the new moon)
+    pm = m if el < 180 else m % 12 + 1         # purnimanta name (Krishna paksha belongs to the next month)
+    vs = y + 56 if (mo <= 4 and m >= 9) else y + 57
+    return {"m": m, "pm": pm, "adhik": r0 == r1, "vs": vs, "shaka": vs - 135, "kali": vs + 3044,
+            "ritu": (m - 1) // 2, "ayana": 0 if int(sl // 30) in (9, 10, 11, 0, 1, 2) else 1,
+            "nm_prev": fmt(prev, tz), "nm_next": fmt(nxt, tz)}
+
 RAHU_PART = {0: 2, 1: 7, 2: 5, 3: 6, 4: 4, 5: 3, 6: 8}  # python weekday Mon=0
 
 def panchang(y, mo, d, tz, lat, lon):
@@ -93,7 +119,8 @@ def panchang(y, mo, d, tz, lat, lon):
             "nak": {"n": int(ml // (40 / 3)), "pada": int((ml % (40 / 3)) // (10 / 3)) + 1, "end": fmt(find_end(M, 40 / 3, rise), tz)},
             "yoga": {"n": int(ys // (40 / 3)), "end": fmt(find_end(ysum, 40 / 3, rise), tz)},
             "karan": {"k": int(el // 6), "end": fmt(find_end(elong, 6, rise), tz)},
-            "rahu": {"part": RAHU_PART[wd], "s": fmt(rs, tz), "e": fmt(rs + seg, tz)}}
+            "rahu": {"part": RAHU_PART[wd], "s": fmt(rs, tz), "e": fmt(rs + seg, tz)},
+            "lunar": lunar_info(y, mo, tz, rise, el, sl)}
 
 @app.post("/api/panchang")
 def api_panchang():
