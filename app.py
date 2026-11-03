@@ -35,7 +35,7 @@ def calc(y, mo, d, h, mi, tz, lat, lon):
             k = (xx[0] + 180) % 360
             out.append({"id": "Ke", "lon": k, "trop": (k + ay) % 360, "retro": True})
     _, ascmc = swe.houses_ex(jd, lat, lon, b"W", swe.FLG_SIDEREAL)
-    return {"jd": jd, "utc_hour": utc_hour, "ayanamsa": ay, "lagna": ascmc[0] % 360,
+    return {"jd": jd, "utc_hour": utc_hour, "ayanamsa": ay, "lagna": ascmc[0] % 360, "mc": ascmc[1] % 360,
             "lagna_trop": (ascmc[0] + ay) % 360, "planets": out}
 
 @app.post("/api/calc")
@@ -162,6 +162,50 @@ def api_muhurat():
     p = request.get_json()
     try:
         return jsonify(muhurat(int(p["y"]), int(p["mo"]), int(p["d"]), float(p["tz"]), float(p["lat"]), float(p["lon"])))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+def chart_jd(jd, lat, lon):
+    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    ay = swe.get_ayanamsa_ut(jd)
+    fl = swe.FLG_MOSEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED
+    out = []
+    for pid, code in PLANETS:
+        xx, _ = swe.calc_ut(jd, pid, fl)
+        out.append({"id": code, "lon": xx[0] % 360, "retro": xx[3] < 0 and code != "Ra"})
+        if code == "Ra":
+            out[-1]["retro"] = True
+            out.append({"id": "Ke", "lon": (xx[0] + 180) % 360, "retro": True})
+    _, ascmc = swe.houses_ex(jd, lat, lon, b"W", swe.FLG_SIDEREAL)
+    return {"lagna": ascmc[0] % 360, "mc": ascmc[1] % 360, "planets": out}
+
+def varsha(inp, year, lat, lon, tz2):
+    y = int(inp["y"])
+    nat = calc(y, int(inp["mo"]), int(inp["d"]), int(inp["h"]), int(inp["mi"]), float(inp["tz"]), float(inp["lat"]), float(inp["lon"]))
+    target = nat["planets"][0]["lon"]
+    if year <= y:
+        raise ValueError("Year must be after the birth year")
+    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    fl = swe.FLG_MOSEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED
+    jd = nat["jd"] + (year - y) * 365.256363
+    for _ in range(60):
+        xx, _ = swe.calc_ut(jd, swe.SUN, fl)
+        diff = ((xx[0] - target + 180) % 360) - 180
+        jd -= diff / xx[3]
+        if abs(diff) < 1e-9:
+            break
+    xx, _ = swe.calc_ut(jd, swe.SUN, fl)
+    ch = chart_jd(jd, lat, lon)
+    age = year - y
+    return {"jd": jd, "local": fmt(jd, tz2), "age": age, "natal_sun": target,
+            "sun_check": xx[0] % 360, "muntha": (int(nat["lagna"] // 30) + age) % 12, **ch}
+
+@app.post("/api/varsha")
+def api_varsha():
+    p = request.get_json()
+    try:
+        return jsonify(varsha(p["natal"], int(p["year"]), float(p["lat"]), float(p["lon"]), float(p["tz"])))
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
