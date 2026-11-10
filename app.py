@@ -35,7 +35,7 @@ def calc(y, mo, d, h, mi, tz, lat, lon):
             k = (xx[0] + 180) % 360
             out.append({"id": "Ke", "lon": k, "trop": (k + ay) % 360, "retro": True})
     _, ascmc = swe.houses_ex(jd, lat, lon, b"W", swe.FLG_SIDEREAL)
-    return {"jd": jd, "utc_hour": utc_hour, "ayanamsa": ay, "lagna": ascmc[0] % 360, "mc": ascmc[1] % 360,
+    return {"jd": jd, "utc_hour": utc_hour, "ayanamsa": ay, "lagna": ascmc[0] % 360,
             "lagna_trop": (ascmc[0] + ay) % 360, "planets": out}
 
 @app.post("/api/calc")
@@ -51,7 +51,6 @@ def api_calc():
 import datetime
 
 def sid(jd, body):
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
     return swe.calc_ut(jd, body, swe.FLG_MOSEPH | swe.FLG_SIDEREAL)[0][0] % 360
 
 def fmt(jd, tz):
@@ -74,31 +73,6 @@ def find_end(fn, unit, jd0):
             hi = mid
     return hi
 
-
-def _signed(j):
-    return ((sid(j, swe.MOON) - sid(j, swe.SUN)) % 360 + 180) % 360 - 180
-
-def new_moon_near(t):
-    lo, hi = t - 2.5, t + 2.5
-    for _ in range(40):
-        mid = (lo + hi) / 2
-        if _signed(mid) < 0:
-            lo = mid
-        else:
-            hi = mid
-    return hi
-
-def lunar_info(y, mo, tz, rise, el, sl):
-    prev = new_moon_near(rise - el / 12.19)
-    nxt = new_moon_near(prev + 29.53)
-    r0, r1 = int(sid(prev, swe.SUN) // 30), int(sid(nxt, swe.SUN) // 30)
-    m = (r0 + 1) % 12 + 1                      # 1=Chaitra ... 12=Phalguna (amanta; named by the Sun's rashi at the new moon)
-    pm = m if el < 180 else m % 12 + 1         # purnimanta name (Krishna paksha belongs to the next month)
-    vs = y + 56 if (mo <= 4 and m >= 9) else y + 57
-    return {"m": m, "pm": pm, "adhik": r0 == r1, "vs": vs, "shaka": vs - 135, "kali": vs + 3044,
-            "ritu": (m - 1) // 2, "ayana": 0 if int(sl // 30) in (9, 10, 11, 0, 1, 2) else 1,
-            "nm_prev": fmt(prev, tz), "nm_next": fmt(nxt, tz)}
-
 RAHU_PART = {0: 2, 1: 7, 2: 5, 3: 6, 4: 4, 5: 3, 6: 8}  # python weekday Mon=0
 
 def panchang(y, mo, d, tz, lat, lon):
@@ -119,8 +93,7 @@ def panchang(y, mo, d, tz, lat, lon):
             "nak": {"n": int(ml // (40 / 3)), "pada": int((ml % (40 / 3)) // (10 / 3)) + 1, "end": fmt(find_end(M, 40 / 3, rise), tz)},
             "yoga": {"n": int(ys // (40 / 3)), "end": fmt(find_end(ysum, 40 / 3, rise), tz)},
             "karan": {"k": int(el // 6), "end": fmt(find_end(elong, 6, rise), tz)},
-            "rahu": {"part": RAHU_PART[wd], "s": fmt(rs, tz), "e": fmt(rs + seg, tz)},
-            "lunar": lunar_info(y, mo, tz, rise, el, sl)}
+            "rahu": {"part": RAHU_PART[wd], "s": fmt(rs, tz), "e": fmt(rs + seg, tz)}}
 
 @app.post("/api/panchang")
 def api_panchang():
@@ -162,192 +135,6 @@ def api_muhurat():
     p = request.get_json()
     try:
         return jsonify(muhurat(int(p["y"]), int(p["mo"]), int(p["d"]), float(p["tz"]), float(p["lat"]), float(p["lon"])))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-def chart_jd(jd, lat, lon):
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
-    ay = swe.get_ayanamsa_ut(jd)
-    fl = swe.FLG_MOSEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED
-    out = []
-    for pid, code in PLANETS:
-        xx, _ = swe.calc_ut(jd, pid, fl)
-        out.append({"id": code, "lon": xx[0] % 360, "retro": xx[3] < 0 and code != "Ra"})
-        if code == "Ra":
-            out[-1]["retro"] = True
-            out.append({"id": "Ke", "lon": (xx[0] + 180) % 360, "retro": True})
-    _, ascmc = swe.houses_ex(jd, lat, lon, b"W", swe.FLG_SIDEREAL)
-    return {"lagna": ascmc[0] % 360, "mc": ascmc[1] % 360, "planets": out}
-
-def varsha(inp, year, lat, lon, tz2):
-    y = int(inp["y"])
-    nat = calc(y, int(inp["mo"]), int(inp["d"]), int(inp["h"]), int(inp["mi"]), float(inp["tz"]), float(inp["lat"]), float(inp["lon"]))
-    target = nat["planets"][0]["lon"]
-    if year <= y:
-        raise ValueError("Year must be after the birth year")
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
-    fl = swe.FLG_MOSEPH | swe.FLG_SIDEREAL | swe.FLG_SPEED
-    jd = nat["jd"] + (year - y) * 365.256363
-    for _ in range(60):
-        xx, _ = swe.calc_ut(jd, swe.SUN, fl)
-        diff = ((xx[0] - target + 180) % 360) - 180
-        jd -= diff / xx[3]
-        if abs(diff) < 1e-9:
-            break
-    xx, _ = swe.calc_ut(jd, swe.SUN, fl)
-    ch = chart_jd(jd, lat, lon)
-    age = year - y
-    return {"jd": jd, "local": fmt(jd, tz2), "age": age, "natal_sun": target,
-            "sun_check": xx[0] % 360, "muntha": (int(nat["lagna"] // 30) + age) % 12, **ch}
-
-@app.post("/api/varsha")
-def api_varsha():
-    p = request.get_json()
-    try:
-        return jsonify(varsha(p["natal"], int(p["year"]), float(p["lat"]), float(p["lon"]), float(p["tz"])))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-def sun_az_alt(jd, lat, lon):
-    xx, _ = swe.calc_ut(jd, swe.SUN, swe.FLG_MOSEPH)
-    az, talt, _ = swe.azalt(jd, swe.ECL2HOR, (lon, lat, 0), 0.0, 0.0, (xx[0], xx[1], xx[2]))
-    return (az + 180) % 360, talt           # bearing clockwise from north, true altitude
-
-def sun_decl(jd):
-    return swe.calc_ut(jd, swe.SUN, swe.FLG_MOSEPH | swe.FLG_EQUATORIAL)[0][1]
-
-def rise_set(y, mo, d, tz, lat, lon):
-    jd0 = swe.julday(y, mo, d, 0) - tz / 24
-    r = swe.rise_trans(jd0, swe.SUN, swe.CALC_RISE, (lon, lat, 0), 0, 0, swe.FLG_MOSEPH)
-    if r[0] != 0:
-        raise ValueError("The Sun does not rise or set on this date at this place")
-    rise = r[1][0]
-    st = swe.rise_trans(rise, swe.SUN, swe.CALC_SET, (lon, lat, 0), 0, 0, swe.FLG_MOSEPH)
-    if st[0] != 0:
-        raise ValueError("The Sun does not rise or set on this date at this place")
-    return rise, st[1][0]
-
-def sunpath(y, mo, d, h, mi, tz, lat, lon):
-    rise, sset = rise_set(y, mo, d, tz, lat, lon)
-    noon = (rise + sset) / 2
-    ra, _ = sun_az_alt(rise, lat, lon)
-    sa, _ = sun_az_alt(sset, lat, lon)
-    na, nalt = sun_az_alt(noon, lat, lon)
-    at_jd = swe.julday(y, mo, d, h + mi / 60 - tz)
-    aa, aalt = sun_az_alt(at_jd, lat, lon)
-    pts, t = [], rise
-    while t <= sset + 1e-9:
-        a, al = sun_az_alt(t, lat, lon)
-        pts.append({"t": fmt(t, tz)[11:], "az": a, "alt": al})
-        t += 1 / 48
-    target = round(nalt * 0.7)
-    def solve(lo, hi, rising):
-        for _ in range(40):
-            mid = (lo + hi) / 2
-            alt = sun_az_alt(mid, lat, lon)[1]
-            if (alt < target) == rising:
-                lo = mid
-            else:
-                hi = mid
-        return (lo + hi) / 2
-    j1, j2 = solve(rise, noon, True), solve(noon, sset, False)
-    p1, p2 = sun_az_alt(j1, lat, lon), sun_az_alt(j2, lat, lon)
-    key = []
-    for label, (mm, dd) in (("Mar", (3, 21)), ("Jun", (6, 21)), ("Sep", (9, 23)), ("Dec", (12, 22))):
-        r, s2 = rise_set(y, mm, dd, tz, lat, lon)
-        key.append({"label": label, "date": "%d-%02d-%02d" % (y, mm, dd), "rise": sun_az_alt(r, lat, lon)[0], "set": sun_az_alt(s2, lat, lon)[0], "decl": sun_decl(r)})
-    return {"date": "%d-%02d-%02d" % (y, mo, d), "rise": {"t": fmt(rise, tz)[11:], "az": ra}, "set": {"t": fmt(sset, tz)[11:], "az": sa},
-            "noon": {"t": fmt(noon, tz)[11:], "alt": nalt, "az": na}, "decl": sun_decl(noon), "at": {"az": aa, "alt": aalt},
-            "pts": pts, "pair": {"alt": target, "t1": fmt(j1, tz)[11:], "az1": p1[0], "t2": fmt(j2, tz)[11:], "az2": p2[0]}, "key": key}
-
-@app.post("/api/sunpath")
-def api_sunpath():
-    p = request.get_json()
-    try:
-        return jsonify(sunpath(int(p["y"]), int(p["mo"]), int(p["d"]), int(p["h"]), int(p["mi"]), float(p["tz"]), float(p["lat"]), float(p["lon"])))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-def full_moon_near(t):
-    lo, hi = t - 2.5, t + 2.5
-    for _ in range(40):
-        mid = (lo + hi) / 2
-        if ((sid(mid, swe.MOON) - sid(mid, swe.SUN)) % 360) - 180 < 0:
-            lo = mid
-        else:
-            hi = mid
-    return hi
-
-ECL_S = [(swe.ECL_TOTAL, "total"), (swe.ECL_ANNULAR_TOTAL, "hybrid"), (swe.ECL_ANNULAR, "annular"), (swe.ECL_PARTIAL, "partial")]
-ECL_L = [(swe.ECL_TOTAL, "total"), (swe.ECL_PARTIAL, "partial"), (swe.ECL_PENUMBRAL, "penumbral")]
-
-def yearcal(year, tz, lat, lon):
-    jd0 = swe.julday(year, 1, 1, 0) - tz / 24
-    jd1 = swe.julday(year + 1, 1, 1, 0) - tz / 24
-    S, M = (lambda j: sid(j, swe.SUN)), (lambda j: sid(j, swe.MOON))
-    elong = lambda j: (M(j) - S(j)) % 360
-    nms = [new_moon_near(jd0 - elong(jd0) / 12.19)]
-    while nms[-1] < jd1 + 35:
-        nms.append(new_moon_near(nms[-1] + 29.53))
-    luns = []
-    for i in range(len(nms) - 1):
-        r0, r1 = int(S(nms[i]) // 30), int(S(nms[i + 1]) // 30)
-        fm = full_moon_near(nms[i] + 14.77)
-        if (jd0 <= nms[i] < jd1) or (jd0 <= fm < jd1):
-            luns.append({"nm": fmt(nms[i], tz), "full": fmt(fm, tz), "m": (r0 + 1) % 12 + 1, "adhik": r0 == r1,
-                         "nak": int(M(fm) // (40 / 3)), "end": fmt(nms[i + 1], tz)})
-    sk, t, pr = [], jd0, int(S(jd0) // 30)
-    while t < jd1:
-        t2 = t + 1
-        r = int(S(t2) // 30)
-        if r != pr:
-            lo, hi = t, t2
-            for _ in range(40):
-                mid = (lo + hi) / 2
-                if int(S(mid) // 30) == pr:
-                    lo = mid
-                else:
-                    hi = mid
-            sk.append({"rashi": r, "t": fmt(hi, tz)})
-        pr, t = r, t2
-    ek, day = [], datetime.date(year, 1, 1)
-    for i in range((datetime.date(year + 1, 1, 1) - day).days):
-        res, tr = swe.rise_trans(jd0 + i, swe.SUN, swe.CALC_RISE, (lon, lat, 0), 0, 0, swe.FLG_MOSEPH)
-        if res != 0:
-            continue
-        rise = tr[0]
-        n = int(elong(rise) // 12) + 1
-        if n in (11, 26):
-            ek.append({"date": (day + datetime.timedelta(i)).isoformat(), "n": n, "end": fmt(find_end(elong, 12, rise), tz)})
-    geo, fl = (lon, lat, 0), swe.FLG_MOSEPH
-    sol, t = [], jd0 - 1
-    while True:
-        r, tr = swe.sol_eclipse_when_glob(t, fl, 0, False)
-        if tr[0] >= jd1:
-            break
-        typ = next(n for b, n in ECL_S if r & b)
-        rl, tl, _ = swe.sol_eclipse_when_loc(tr[0] - 2, geo, fl, False)
-        sol.append({"t": fmt(tr[0], tz), "type": typ, "visible": abs(tl[0] - tr[0]) < 1})
-        t = tr[0] + 20
-    lun, t = [], jd0 - 1
-    while True:
-        r, tr = swe.lun_eclipse_when(t, fl, 0, False)
-        if tr[0] >= jd1:
-            break
-        typ = next(n for b, n in ECL_L if r & b)
-        rl, tl, _ = swe.lun_eclipse_when_loc(tr[0] - 2, geo, fl, False)
-        lun.append({"t": fmt(tr[0], tz), "type": typ, "visible": abs(tl[0] - tr[0]) < 1})
-        t = tr[0] + 20
-    return {"year": year, "sankranti": sk, "lunations": luns, "ekadashi": ek, "solar": sol, "lunar": lun}
-
-@app.post("/api/yearcal")
-def api_yearcal():
-    p = request.get_json()
-    try:
-        return jsonify(yearcal(int(p["year"]), float(p["tz"]), float(p["lat"]), float(p["lon"])))
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
